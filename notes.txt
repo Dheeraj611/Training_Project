@@ -1,0 +1,70 @@
+# dataloader
+from pathlib import Path
+from typing import List, Any
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import Docx2txtLoader
+from langchain_community.document_loaders.excel import UnstructuredExcelLoader
+from langchain_community.document_loaders import JSONLoader
+
+def load_all_documents(data_dir: str) -> List[Any]:
+    """
+    Load all supported files from the data directory and convert to LangChain document structures.
+    Supported: PDF, TXT, CSV, Excel, Word, JSON
+    """
+    # Use project root data folder
+    data_path = Path(data_dir).resolve()
+    print(f"[DEBUG] Data path: {data_path}")
+    documents = []
+
+    # PDF files
+    pdf_files = list(data_path.glob('**/*.pdf'))
+    print(f"[DEBUG] Found {len(pdf_files)} PDF files: {[str(f) for f in pdf_files]}")
+    for pdf_file in pdf_files:
+        print(f"[DEBUG] Loading PDF: {pdf_file}")
+        try:
+            loader = PyPDFLoader(str(pdf_file))
+            loaded = loader.load()
+            print(f"[DEBUG] Loaded {len(loaded)} PDF docs from {pdf_file}")
+            documents.extend(loaded)
+        except Exception as e:
+            print(f"[ERROR] Failed to load PDF {pdf_file}: {e}")
+
+
+# search.Py
+import os
+from dotenv import load_dotenv
+from src.vectorstore import FaissVectorStore
+from langchain_groq import ChatGroq
+
+load_dotenv()
+
+class RAGSearch:
+    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = "all-MiniLM-L6-v2", llm_model: str = "llama3-8b-8192"):
+        self.vectorstore = FaissVectorStore(persist_dir, embedding_model)
+        # Load or build vectorstore
+        faiss_path = os.path.join(persist_dir, "faiss_index")
+        meta_path = os.path.join(persist_dir, "metadata.pkl")
+        
+        if not (os.path.exists(faiss_path) and os.path.exists(meta_path)):
+            from data_loader import load_all_documents
+            docs = load_all_documents("data")
+            self.vectorstore.build_from_documents(docs)
+        else:
+            self.vectorstore.load()
+            
+        groq_api_key = os.environ.get("GROQ_API_KEY")
+        self.llm = ChatGroq(groq_api_key=groq_api_key, model_name=llm_model)
+        print(f"[INFO] Groq LLM initialized: {llm_model}")
+
+    def search_and_summarize(self, query: str, top_k: int = 5) -> str:
+        results = self.vectorstore.query(query, top_k=top_k)
+        texts = [r["metadata"].get("text", "") for r in results if r["metadata"]]
+        context = "\n\n".join(texts)
+        
+        if not context:
+            return "No relevant documents found."
+            
+        prompt = f"""Summarize the following context for the query: '{query}'\n\nContext:\n{context}"""
+        response = self.llm.invoke([prompt])
+        return response.content
+
